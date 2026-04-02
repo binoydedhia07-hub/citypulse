@@ -12,32 +12,34 @@ export async function POST(req: NextRequest) {
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
    // 1. THE ACTUAL BACKEND FIX FOR REDDIT
-    let posts = "No live Reddit data available. Rely strictly on your training data for highly accurate local recommendations.";
+    // 1. THE PROXY HACK FOR REDDIT
+    let posts = "No live Reddit data available. Rely strictly on your training data.";
     
     try {
-      // Swapped to api.reddit.com which is less hostile to server requests
-      const redditUrl = `https://api.reddit.com/r/${city.replace(/\s+/g, '')}/search?q=${vibe}&restrict_sr=on&sort=top&t=year&limit=10`;
+      // The original target URL
+      const targetUrl = `https://www.reddit.com/r/${city.replace(/\s+/g, '')}/search.json?q=${vibe}&restrict_sr=on&sort=top&t=year&limit=10`;
       
-      const redditRes = await fetch(redditUrl, {
-        headers: { 
-          // Reddit strictly enforces this exact User-Agent format for API access
-          'User-Agent': 'web:com.vibecheck.app:v1.0 (by /u/vibecheck_admin)',
-          'Accept': 'application/json'
-        },
-        cache: 'no-store' // Force fresh fetch, don't let Vercel cache a dead response
-      });
+      // Wrap it in a free public proxy to bypass the Vercel/AWS IP block
+      const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
       
-      const contentType = redditRes.headers.get("content-type");
-      if (redditRes.ok && contentType && contentType.includes("application/json")) {
-        const redditData = await redditRes.json();
+      const redditRes = await fetch(proxyUrl, { cache: 'no-store' });
+      
+      if (redditRes.ok) {
+        const proxyData = await redditRes.json();
         
-        if (redditData.data && redditData.data.children && redditData.data.children.length > 0) {
-          posts = redditData.data.children.map((child: any) => 
-            `Title: ${child.data.title}\nText: ${child.data.selftext.slice(0, 300)}`
-          ).join('\n\n---\n\n');
+        // AllOrigins returns the scraped data as a string inside the 'contents' property
+        if (proxyData.contents) {
+          const redditData = JSON.parse(proxyData.contents);
+          
+          if (redditData.data && redditData.data.children && redditData.data.children.length > 0) {
+            posts = redditData.data.children.map((child: any) => 
+              `Title: ${child.data.title}\nText: ${child.data.selftext.slice(0, 300)}`
+            ).join('\n\n---\n\n');
+            console.log("Successfully crawled Reddit via Proxy!");
+          }
         }
       } else {
-         console.error("Reddit blocked the API request. Status:", redditRes.status);
+         console.error("Proxy request failed. Status:", redditRes.status);
       }
     } catch (redditError) {
       console.error("Reddit fetch failed:", redditError);
