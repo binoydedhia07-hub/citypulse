@@ -48,7 +48,8 @@ export async function POST(req: NextRequest) {
 
     // 2. AI REASONING (Gemini 1.5 Flash Latest)
     const genAI = new GoogleGenerativeAI(GEMINI_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+    // CHANGE THIS LINE:
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-002" });
 
     const prompt = `
       You are a local travel expert for ${city}.
