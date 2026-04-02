@@ -1,57 +1,78 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY as string);
-
 export async function POST(req: NextRequest) {
   try {
     const { city, vibe } = await req.json();
 
-    // 1. FREE WEB CRAWL: Fetch live Reddit data without an API key
-    // We search the specific city subreddit for the requested vibe
-    const redditUrl = `https://www.reddit.com/r/${city.replace(/\s+/g, '')}/search.json?q=${vibe}&restrict_sr=on&sort=top&t=year&limit=10`;
-    
-    const redditRes = await fetch(redditUrl);
-    const redditData = await redditRes.json();
-    
-    // Extract titles and main text from Reddit posts to feed to Gemini
-    const posts = redditData.data?.children.map((child: any) => 
-      `Title: ${child.data.title}\nText: ${child.data.selftext.slice(0, 300)}`
-    ).join('\n\n---\n\n') || "No Reddit data found.";
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error("Missing Gemini API Key");
+    }
 
-    // 2. THE REASONING LAYER: Gemini API
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+    // 1. SAFE REDDIT FETCH WITH FALLBACK
+    let posts = "No live Reddit data available. Rely strictly on your training data for highly accurate local recommendations.";
     
+    try {
+      const redditUrl = `https://www.reddit.com/r/${city.replace(/\s+/g, '')}/search.json?q=${vibe}&restrict_sr=on&sort=top&t=year&limit=10`;
+      const redditRes = await fetch(redditUrl, {
+        headers: { 'User-Agent': 'VibeCheck-App/1.1 (Contact: admin@vibecheck.com)' }
+      });
+      
+      // Only attempt to parse if Reddit actually returned JSON
+      const contentType = redditRes.headers.get("content-type");
+      if (redditRes.ok && contentType && contentType.includes("application/json")) {
+        const redditData = await redditRes.json();
+        
+        if (redditData.data && redditData.data.children && redditData.data.children.length > 0) {
+          posts = redditData.data.children.map((child: any) => 
+            `Title: ${child.data.title}\nText: ${child.data.selftext.slice(0, 300)}`
+          ).join('\n\n---\n\n');
+        }
+      } else {
+        console.warn("Reddit blocked the request or returned HTML. Falling back to Gemini knowledge.");
+      }
+    } catch (redditError) {
+      console.warn("Reddit fetch failed completely. Falling back to Gemini knowledge.");
+    }
+
+    // 2. THE REASONING LAYER
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const prompt = `
       You are a local travel expert. A user is visiting ${city} and looking for a "${vibe}" vibe.
-      Here is the latest raw data scraped from the local Reddit community:
+      
+      Here is the latest raw data scraped from the local Reddit community (if available):
       ${posts}
       
-      Based ONLY on the provided Reddit data, extract 3 actual places or specific recommendations.
-      If the Reddit data is empty or irrelevant, suggest 3 highly accurate places in ${city} that match the vibe.
+      Based on the Reddit data OR your own expert knowledge of ${city}, extract or suggest 3 highly accurate places that match the exact vibe.
       
-      Return ONLY a JSON array of objects with this exact structure:
+      Return ONLY a raw JSON array of objects with this exact structure (no markdown, no backticks, no extra text):
       [
         {
           "name": "Name of the place",
-          "why": "A 2-sentence explanation of why it fits the vibe, citing Reddit sentiment if available.",
+          "why": "A 2-sentence explanation of why it fits the vibe.",
           "vibeScore": "A rating out of 10 based on the hype."
         }
       ]
     `;
 
-    // Force Gemini to return clean JSON
     const result = await model.generateContent({
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: { responseMimeType: "application/json" }
     });
 
-    const recommendations = JSON.parse(result.response.text());
+    // 3. CLEAN AND PARSE THE AI RESPONSE
+    let rawText = result.response.text();
+    // Strip any markdown code blocks if Gemini accidentally includes them
+    rawText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+
+    const recommendations = JSON.parse(rawText);
 
     return NextResponse.json({ recommendations });
 
-  } catch (error) {
-    console.error(error);
-    return NextResponse.json({ error: 'Failed to generate vibe check.' }, { status: 500 });
+  } catch (error: any) {
+    console.error("Backend Error:", error);
+    return NextResponse.json({ error: error.message || 'Failed to generate vibe check.' }, { status: 500 });
   }
 }
