@@ -50,7 +50,8 @@ export async function POST(req: NextRequest) {
     const genAI = new GoogleGenerativeAI(GEMINI_KEY);
     // CHANGE THIS LINE:
     // CHANGE THIS LINE:
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+    // REPLACE THE MODEL LINE WITH THIS:
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     const prompt = `
       You are a local travel expert for ${city}.
