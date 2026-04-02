@@ -10,68 +10,67 @@ export async function POST(req: NextRequest) {
     const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
     if (!GEMINI_KEY || !APIFY_TOKEN) {
-      throw new Error("Missing API Keys");
+      throw new Error("API Keys are not configured in Vercel.");
     }
 
-    // 1. ROBUST APIFY CALL
+    // 1. FIXED APIFY ENDPOINT (using the correct ~ separator)
     let redditPosts = "No live Reddit data found.";
     
     try {
-      // Switched to a faster endpoint that fetches existing data or runs a quicker scrape
-      const apifyUrl = `https://api.apify.com/v2/acts/apify~reddit-scraper/run-sync?token=${APIFY_TOKEN}&timeout=30`;
+      // Corrected Actor ID: khadinakbar~reddit-posts-comments-scraper
+      const apifyUrl = `https://api.apify.com/v2/acts/khadinakbar~reddit-posts-comments-scraper/run-sync-get-dataset-items?token=${APIFY_TOKEN}`;
       
       const response = await fetch(apifyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          search: `${city} ${vibe}`,
-          type: 'posts',
-          maxItems: 3, // Lowering items for speed to ensure the 500 error goes away
-          sort: 'relevance'
+          // The specific input this scraper expects
+          queries: `${city} ${vibe}`,
+          maxPosts: 5,
+          searchType: "link" 
         })
       });
 
       if (response.ok) {
-        const runResult = await response.json();
-        // Get the dataset ID from the successful run
-        const datasetId = runResult.data.defaultDatasetId;
-        
-        // Quickly fetch the items from that dataset
-        const itemsResponse = await fetch(`https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}`);
-        const items = await itemsResponse.json();
-        
+        const items = await response.json();
         if (Array.isArray(items) && items.length > 0) {
           redditPosts = items.map((item: any) => 
-            `Title: ${item.title}\nText: ${item.text?.slice(0, 150) || ''}`
+            `Title: ${item.title}\nText: ${item.selftext?.slice(0, 200) || ''}`
           ).join('\n---\n');
-          console.log("SUCCESS: Captured Reddit data.");
+          console.log("SUCCESS: Captured live Reddit pulse.");
         }
       } else {
-        console.error("Apify returned error status:", response.status);
+        console.error("Apify API error:", response.status);
       }
     } catch (e) {
-      console.error("Crawl failed, using fallback.");
+      console.error("Crawl failed, proceeding with AI knowledge.");
     }
-    // 2. AI SYNTHESIS
+
+    // 2. AI REASONING (Gemini 1.5 Flash Latest)
     const genAI = new GoogleGenerativeAI(GEMINI_KEY);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
 
     const prompt = `
-      City: ${city} | Requested Vibe: ${vibe}
-      Live Reddit Context: ${redditPosts}
+      You are a local travel expert for ${city}.
+      User is looking for a "${vibe}" vibe.
       
-      If the Reddit context is useful, use it. Otherwise, use your expert knowledge of ${city}.
-      Suggest 3 places. Return ONLY a raw JSON array:
-      [{"name": "Place", "why": "Explanation", "vibeScore": "1-10"}]
+      Here is some recent raw sentiment from local Reddit threads:
+      ${redditPosts}
+      
+      Extract 3 real, specific places. If Reddit is sparse, use your deep expert knowledge.
+      Return ONLY a raw JSON array:
+      [{"name": "Place Name", "why": "2-sentence pitch based on vibe/sentiment", "vibeScore": "1-10"}]
     `;
 
     const result = await model.generateContent(prompt);
-    const text = result.response.text().replace(/```json/gi, '').replace(/```/g, '').trim();
+    let text = result.response.text();
+    text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
     const recommendations = JSON.parse(text);
 
     return NextResponse.json({ recommendations });
 
   } catch (error: any) {
+    console.error("Critical Backend Error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
