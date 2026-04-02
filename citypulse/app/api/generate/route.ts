@@ -1,64 +1,62 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { ApifyClient } from 'apify-client';
+
+// CRITICAL: Vercel defaults to 10s timeouts. Apify needs more time.
+// This allows the serverless function to run for up to 60 seconds.
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
     const { city, vibe } = await req.json();
 
-    if (!process.env.GEMINI_API_KEY) {
-      throw new Error("Missing Gemini API Key");
+    if (!process.env.GEMINI_API_KEY || !process.env.APIFY_API_TOKEN) {
+      throw new Error("Missing Gemini or Apify API Keys in environment variables.");
     }
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const apifyClient = new ApifyClient({ token: process.env.APIFY_API_TOKEN });
 
-   // 1. THE ACTUAL BACKEND FIX FOR REDDIT
-    // 1. THE PROXY HACK FOR REDDIT
-    let posts = "No live Reddit data available. Rely strictly on your training data.";
-    
+    // 1. THE APIFY CRAWL
+    let posts = "No Reddit data found.";
     try {
-      // The original target URL
-      const targetUrl = `https://www.reddit.com/r/${city.replace(/\s+/g, '')}/search.json?q=${vibe}&restrict_sr=on&sort=top&t=year&limit=10`;
+      // We call the official Apify Reddit Scraper
+      const run = await apifyClient.actor("apify/reddit-scraper").call({
+        startUrls: [{ url: `https://www.reddit.com/r/${city.replace(/\s+/g, '')}/search/?q=${vibe}&restrict_sr=1&sort=top` }],
+        maxItems: 10,
+        skipComments: true
+      });
+
+      // Fetch the results from the Apify dataset
+      const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
       
-      // Wrap it in a free public proxy to bypass the Vercel/AWS IP block
-      const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
-      
-      const redditRes = await fetch(proxyUrl, { cache: 'no-store' });
-      
-      if (redditRes.ok) {
-        const proxyData = await redditRes.json();
-        
-        // AllOrigins returns the scraped data as a string inside the 'contents' property
-        if (proxyData.contents) {
-          const redditData = JSON.parse(proxyData.contents);
-          
-          if (redditData.data && redditData.data.children && redditData.data.children.length > 0) {
-            posts = redditData.data.children.map((child: any) => 
-              `Title: ${child.data.title}\nText: ${child.data.selftext.slice(0, 300)}`
-            ).join('\n\n---\n\n');
-            console.log("Successfully crawled Reddit via Proxy!");
-          }
-        }
-      } else {
-         console.error("Proxy request failed. Status:", redditRes.status);
+      if (items.length > 0) {
+        posts = items.map((item: any) => 
+          `Title: ${item.title}\nText: ${item.text?.slice(0, 300) || ''}`
+        ).join('\n\n---\n\n');
+        console.log("Apify successfully scraped Reddit!");
       }
-    } catch (redditError) {
-      console.error("Reddit fetch failed:", redditError);
+    } catch (apifyError) {
+      console.error("Apify Crawl Failed:", apifyError);
     }
-    // 2. THE REASONING LAYER
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+    // 2. THE AI SYNTHESIS
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); 
+    
     const prompt = `
       You are a local travel expert. A user is visiting ${city} and looking for a "${vibe}" vibe.
       
-      Here is the latest raw data scraped from the local Reddit community (if available):
+      Here is the live data just scraped from Reddit via our web crawler:
       ${posts}
       
-      Based on the Reddit data OR your own expert knowledge of ${city}, extract or suggest 3 highly accurate places that match the exact vibe.
+      Based ONLY on this Reddit data, extract 3 actual places or specific recommendations.
+      If the crawled data is irrelevant, use your own knowledge to suggest 3 highly accurate places in ${city}.
       
-      Return ONLY a raw JSON array of objects with this exact structure (no markdown, no backticks, no extra text):
+      Return ONLY a raw JSON array of objects with this exact structure (no markdown):
       [
         {
           "name": "Name of the place",
-          "why": "A 2-sentence explanation of why it fits the vibe.",
+          "why": "A 2-sentence explanation of why it fits the vibe, citing the Reddit sentiment.",
           "vibeScore": "A rating out of 10 based on the hype."
         }
       ]
@@ -69,9 +67,7 @@ export async function POST(req: NextRequest) {
         generationConfig: { responseMimeType: "application/json" }
     });
 
-    // 3. CLEAN AND PARSE THE AI RESPONSE
     let rawText = result.response.text();
-    // Strip any markdown code blocks if Gemini accidentally includes them
     rawText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
 
     const recommendations = JSON.parse(rawText);
