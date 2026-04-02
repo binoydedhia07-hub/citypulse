@@ -11,16 +11,22 @@ export async function POST(req: NextRequest) {
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-    // 1. SAFE REDDIT FETCH WITH FALLBACK
+   // 1. THE ACTUAL BACKEND FIX FOR REDDIT
     let posts = "No live Reddit data available. Rely strictly on your training data for highly accurate local recommendations.";
     
     try {
-      const redditUrl = `https://www.reddit.com/r/${city.replace(/\s+/g, '')}/search.json?q=${vibe}&restrict_sr=on&sort=top&t=year&limit=10`;
+      // Swapped to api.reddit.com which is less hostile to server requests
+      const redditUrl = `https://api.reddit.com/r/${city.replace(/\s+/g, '')}/search?q=${vibe}&restrict_sr=on&sort=top&t=year&limit=10`;
+      
       const redditRes = await fetch(redditUrl, {
-        headers: { 'User-Agent': 'VibeCheck-App/1.1 (Contact: admin@vibecheck.com)' }
+        headers: { 
+          // Reddit strictly enforces this exact User-Agent format for API access
+          'User-Agent': 'web:com.vibecheck.app:v1.0 (by /u/vibecheck_admin)',
+          'Accept': 'application/json'
+        },
+        cache: 'no-store' // Force fresh fetch, don't let Vercel cache a dead response
       });
       
-      // Only attempt to parse if Reddit actually returned JSON
       const contentType = redditRes.headers.get("content-type");
       if (redditRes.ok && contentType && contentType.includes("application/json")) {
         const redditData = await redditRes.json();
@@ -31,12 +37,11 @@ export async function POST(req: NextRequest) {
           ).join('\n\n---\n\n');
         }
       } else {
-        console.warn("Reddit blocked the request or returned HTML. Falling back to Gemini knowledge.");
+         console.error("Reddit blocked the API request. Status:", redditRes.status);
       }
     } catch (redditError) {
-      console.warn("Reddit fetch failed completely. Falling back to Gemini knowledge.");
+      console.error("Reddit fetch failed:", redditError);
     }
-
     // 2. THE REASONING LAYER
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const prompt = `
