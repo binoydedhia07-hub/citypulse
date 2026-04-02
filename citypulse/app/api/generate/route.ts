@@ -13,35 +13,45 @@ export async function POST(req: NextRequest) {
       throw new Error("Missing API Keys");
     }
 
-    // 1. LIGHTWEIGHT APIFY CALL (No SDK needed)
+    // 1. ROBUST APIFY CALL
     let redditPosts = "No live Reddit data found.";
     
     try {
-      const apifyUrl = `https://api.apify.com/v2/acts/apify~reddit-scraper/run-sync-get-dataset-items?token=${APIFY_TOKEN}`;
+      // Switched to a faster endpoint that fetches existing data or runs a quicker scrape
+      const apifyUrl = `https://api.apify.com/v2/acts/apify~reddit-scraper/run-sync?token=${APIFY_TOKEN}&timeout=30`;
       
       const response = await fetch(apifyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          startUrls: [{ url: `https://www.reddit.com/r/${city.replace(/\s+/g, '')}/search/?q=${vibe}&restrict_sr=1&sort=top` }],
-          maxItems: 5,
-          skipComments: true
+          search: `${city} ${vibe}`,
+          type: 'posts',
+          maxItems: 3, // Lowering items for speed to ensure the 500 error goes away
+          sort: 'relevance'
         })
       });
 
       if (response.ok) {
-        const items = await response.json();
+        const runResult = await response.json();
+        // Get the dataset ID from the successful run
+        const datasetId = runResult.data.defaultDatasetId;
+        
+        // Quickly fetch the items from that dataset
+        const itemsResponse = await fetch(`https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}`);
+        const items = await itemsResponse.json();
+        
         if (Array.isArray(items) && items.length > 0) {
           redditPosts = items.map((item: any) => 
-            `Title: ${item.title}\nText: ${item.text?.slice(0, 200) || ''}`
+            `Title: ${item.title}\nText: ${item.text?.slice(0, 150) || ''}`
           ).join('\n---\n');
-          console.log("SUCCESS: Live Reddit data captured via Apify API.");
+          console.log("SUCCESS: Captured Reddit data.");
         }
+      } else {
+        console.error("Apify returned error status:", response.status);
       }
     } catch (e) {
-      console.error("Apify API call failed, falling back to Gemini knowledge.");
+      console.error("Crawl failed, using fallback.");
     }
-
     // 2. AI SYNTHESIS
     const genAI = new GoogleGenerativeAI(GEMINI_KEY);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
